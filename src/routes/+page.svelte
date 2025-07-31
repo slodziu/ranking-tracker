@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
   import Chart from 'chart.js/auto';
   import 'chartjs-adapter-date-fns';
-  
+  import { injectAnalytics } from '@vercel/analytics/sveltekit'
   // Navigation state
+  injectAnalytics({ mode: dev ? 'development' : 'production' });
   let currentView = 'purplefish'; // 'purplefish', 'clients', or 'analytics'
   let selectedClient: any = null;
   let clients: any[] = [];
