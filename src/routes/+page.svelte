@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dev } from '$app/environment';
   import { onMount } from 'svelte';
   import Chart from 'chart.js/auto';
   import 'chartjs-adapter-date-fns';
