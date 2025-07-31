@@ -3,7 +3,10 @@ import { json } from '@sveltejs/kit';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '$env/static/private';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
+console.log('🔍 Environment check:');
+console.log('SUPABASE_URL:', process.env.SUPABASE_URL ? 'Found' : 'Missing');
+console.log('SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? 'Found' : 'Missing');
+console.log('APP_PASSWORD:', process.env.APP_PASSWORD ? 'Found' : 'Missing');
 export const GET = async ({ url }) => {
   const keywordId = url.searchParams.get('keyword_id');
   const days = url.searchParams.get('days');
