@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { APP_PASSWORD } from '$env/static/private';
+import { dev } from '$app/environment';
 
 // Use the SvelteKit way to import env vars, with fallback
 const SIMPLE_PASSWORD = APP_PASSWORD || 'your-team-password';
@@ -17,9 +18,9 @@ export const POST = async ({ request, cookies }) => {
   if (password === SIMPLE_PASSWORD) {
     cookies.set('app-auth', password, {
       path: '/',
-      maxAge: 60 * 60 * 24 * 7,
+      maxAge: 60 * 60 * 24 * 7, // 7 days
       httpOnly: true,
-      secure: false,
+      secure: !dev, // true in production, false in development
       sameSite: 'strict'
     });
     
