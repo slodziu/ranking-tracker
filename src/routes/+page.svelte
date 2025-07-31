@@ -35,6 +35,11 @@
   let selectedKeywords: Set<string> = new Set();
   let chartInstance: Chart | null = null;
   let chartCanvas: HTMLCanvasElement;
+
+  // New variables for historical data and timeframe selection
+  let selectedTimeframe = '30'; // Default to 30 days
+  let customDateFrom = '';
+  let customDateTo = '';
   let historicalData: any[] = [];
 
   // Auto-load Purplefish data on page load
@@ -170,10 +175,19 @@
 
   // Load historical data for chart
   async function loadHistoricalData(type: string, clientId?: number) {
+    console.log('🔄 Loading historical data:', { type, clientId, timeframe: selectedTimeframe });
+    
     const params = new URLSearchParams({
       type,
-      days: '30'
+      days: selectedTimeframe
     });
+    
+    // Add custom date range if specified
+    if (selectedTimeframe === 'custom' && customDateFrom && customDateTo) {
+      params.set('date_from', customDateFrom);
+      params.set('date_to', customDateTo);
+      params.delete('days'); // Don't use days for custom range
+    }
     
     if (type === 'client' && clientId) {
       params.append('client_id', clientId.toString());
@@ -183,11 +197,22 @@
       const resp = await fetch(`/api/historical?${params}`);
       const data = await resp.json();
       
+      console.log('📥 Historical data response:', data);
+      
       if (!data.error) {
         historicalData = data;
+        console.log('✅ Historical data loaded:', historicalData.length, 'records');
+        
+        // Update chart if keywords are selected
+        if (selectedKeywords.size > 0) {
+          updateChart();
+        }
+      } else {
+        console.error('❌ API error:', data.error);
+        historicalData = [];
       }
     } catch (e) {
-      console.error('Error loading historical data:', e);
+      console.error('❌ Error loading historical data:', e);
       historicalData = [];
     }
   }
@@ -209,16 +234,16 @@
   console.log('📊 Selected keywords:', Array.from(selectedKeywords));
   console.log('📈 Historical data:', historicalData);
   
-  if (!chartCanvas || selectedKeywords.size === 0) {
-    if (chartInstance) {
-      chartInstance.destroy();
-      chartInstance = null;
-    }
-    return;
-  }
-
+  // Destroy existing chart first
   if (chartInstance) {
     chartInstance.destroy();
+    chartInstance = null;
+  }
+  
+  // Don't create chart if no keywords selected OR no canvas
+  if (!chartCanvas || selectedKeywords.size === 0) {
+    console.log('❌ No canvas or no keywords selected');
+    return;
   }
 
   const datasets = [];
@@ -249,7 +274,7 @@
         const hasValidY = d.y !== null;
         console.log(`  ✅ Data point has valid Y (${d.y})?`, hasValidY);
         return hasValidY;
-      }) // Only include actual rankings
+      })
       .sort((a, b) => new Date(a.x).getTime() - new Date(b.x).getTime());
 
     console.log(`📈 Final keyword data for ${keyword}:`, keywordData);
@@ -259,15 +284,15 @@
         label: keyword,
         data: keywordData,
         borderColor: colors[colorIndex % colors.length],
-        backgroundColor: colors[colorIndex % colors.length] + '40', // More visible background
+        backgroundColor: colors[colorIndex % colors.length] + '40',
         fill: false,
         tension: 0.1,
-        pointRadius: 8, // Bigger points
-        pointHoverRadius: 12, // Even bigger on hover
-        pointBackgroundColor: colors[colorIndex % colors.length], // Point color
-        pointBorderColor: '#fff', // White border for contrast
+        pointRadius: 8,
+        pointHoverRadius: 12,
+        pointBackgroundColor: colors[colorIndex % colors.length],
+        pointBorderColor: '#fff',
         pointBorderWidth: 2,
-        borderWidth: 4 // Thicker line
+        borderWidth: 4
       });
       colorIndex++;
     }
@@ -275,7 +300,13 @@
 
   console.log('📊 Final datasets:', datasets);
 
-  // Find the earliest and latest dates across all selected keywords
+  // CRITICAL FIX: Only create chart if we have datasets with data
+  if (datasets.length === 0) {
+    console.log('❌ No datasets with data, not creating chart');
+    return;
+  }
+
+  // Find date range
   let minDate = null;
   let maxDate = null;
   
@@ -289,6 +320,9 @@
     }
   });
 
+  console.log('📅 Creating chart with date range:', { minDate, maxDate });
+
+  // Create the chart - only when we have valid datasets
   chartInstance = new Chart(chartCanvas, {
     type: 'line',
     data: { datasets },
@@ -322,7 +356,7 @@
         y: {
           reverse: true,
           min: 1,
-          suggestedMax: 10, // Add this to ensure Y-axis shows properly
+          suggestedMax: 10,
           title: {
             display: true,
             text: 'Ranking Position',
@@ -338,11 +372,11 @@
       },
       elements: {
         point: {
-          radius: 6, // Make points bigger
+          radius: 6,
           hoverRadius: 8
         },
         line: {
-          borderWidth: 3 // Make lines thicker
+          borderWidth: 3
         }
       },
       plugins: {
@@ -366,8 +400,9 @@
       }
     }
   });
-}
 
+  console.log('✅ Chart created successfully');
+}
   // Watch for analytics account changes
   $: if (analyticsAccount) {
     loadAnalyticsData();
@@ -384,71 +419,162 @@
     }
   }
 
-  // Modified fetchClientRankings to save to database
+  // Modified fetchClientRankings to preserve data on API errors
   async function fetchClientRankings() {
-    if (!serpApiKey || !selectedClient) {
-      error = 'Please enter your SerpApi key and select a client.';
-      return;
-    }
-    
-    loading = true;
-    error = '';
-    clientResults = [];
-    const today = new Date().toISOString().slice(0, 10);
-    
-    for (const k of clientKeywords) {
-      try {
-        const resp = await fetch('/api/serpapi', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: k.keyword, apiKey: serpApiKey })
-        });
-        const serpRes = await resp.json();
-
-        const organic = serpRes.organic_results || [];
-        const clientIndex = organic.findIndex((r: any) =>
-          r.link && r.link.includes(selectedClient.website_url?.replace('https://', '').replace('http://', ''))
-        );
+  if (!serpApiKey || !selectedClient) {
+    error = 'Please enter your SerpApi key and select a client.';
+    return;
+  }
+  
+  loading = true;
+  error = '';
+  // DON'T clear clientResults immediately - preserve existing data
+  const today = new Date().toISOString().slice(0, 10);
+  const newResults = []; // Build new results separately
+  let apiErrorOccurred = false;
+  
+  for (const k of clientKeywords) {
+    try {
+      const resp = await fetch('/api/serpapi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: k.keyword, apiKey: serpApiKey })
+      });
+      
+      // CHECK if API response is ok
+      if (!resp.ok) {
+        const errorData = await resp.json();
+        console.error('❌ SerpAPI error for', k.keyword, ':', errorData);
         
-        const local = serpRes.local_results?.places || [];
-        const clientLocalIndex = local.findIndex((r: any) =>
-          r.title && r.title.toLowerCase().includes(selectedClient.google_business_name?.toLowerCase() || selectedClient.name.toLowerCase())
-        );
-        
-        const paa = serpRes.related_questions?.map((q: any) => q.question) || [];
-
-        const result = {
-          organicRank: clientIndex >= 0 ? clientIndex + 1 : 'Not found',
-          localRank: clientLocalIndex >= 0 ? clientLocalIndex + 1 : 'Not found',
-          paa
-        };
-        
-        clientResults = [...clientResults, { keyword: k.keyword, ...result }];
-
-        // Save result to database
-        await fetch('/api/client-results', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            client_keyword_id: k.id, 
-            result_JSON: result, 
-            date: today 
-          })
-        });
-        
-      } catch (e) {
-        clientResults = [...clientResults, {
-          keyword: k.keyword,
-          organicRank: 'Error',
-          localRank: 'Error',
-          paa: [],
-          error: 'Error fetching this keyword'
-        }];
+        // Keep existing result if available, otherwise show error
+        const existingResult = clientResults.find(r => r.keyword === k.keyword);
+        if (existingResult) {
+          newResults.push(existingResult); // Keep old data
+        } else {
+          newResults.push({
+            keyword: k.keyword,
+            organicRank: 'API Error',
+            localRank: 'API Error',
+            paa: [],
+            error: errorData.error || 'API request failed'
+          });
+        }
+        apiErrorOccurred = true;
+        continue;
       }
+      
+      const serpRes = await resp.json();
+      
+      // Check if serpRes has error
+      if (serpRes.error) {
+        console.error('❌ SerpAPI returned error for', k.keyword, ':', serpRes.error);
+        
+        // Keep existing result if available
+        const existingResult = clientResults.find(r => r.keyword === k.keyword);
+        if (existingResult) {
+          newResults.push(existingResult);
+        } else {
+          newResults.push({
+            keyword: k.keyword,
+            organicRank: 'API Error',
+            localRank: 'API Error',
+            paa: [],
+            error: serpRes.error
+          });
+        }
+        apiErrorOccurred = true;
+        continue;
+      }
+
+      const organic = serpRes.organic_results || [];
+      
+      // FIXED: Better client website matching
+      let clientIndex = -1;
+      if (selectedClient.website_url) {
+        const clientDomain = selectedClient.website_url
+          .replace(/^https?:\/\//, '')
+          .replace(/^www\./, '')
+          .replace(/\/$/, '')
+          .toLowerCase();
+        
+        clientIndex = organic.findIndex((r: any) => {
+          if (!r.link) return false;
+          
+          const resultDomain = r.link
+            .replace(/^https?:\/\//, '')
+            .replace(/^www\./, '')
+            .toLowerCase();
+          
+          return resultDomain.includes(clientDomain) || clientDomain.includes(resultDomain);
+        });
+      }
+      
+      const local = serpRes.local_results?.places || [];
+      let clientLocalIndex = -1;
+      const businessName = (selectedClient.google_business_name || selectedClient.name || '').toLowerCase();
+      
+      if (businessName) {
+        clientLocalIndex = local.findIndex((r: any) => {
+          if (!r.title) return false;
+          const localTitle = r.title.toLowerCase();
+          return localTitle.includes(businessName) || businessName.includes(localTitle);
+        });
+      }
+      
+      const paa = serpRes.related_questions?.map((q: any) => q.question) || [];
+
+      const result = {
+        organicRank: clientIndex >= 0 ? clientIndex + 1 : 'Not found',
+        localRank: clientLocalIndex >= 0 ? clientLocalIndex + 1 : 'Not found',
+        paa
+      };
+      
+      newResults.push({ keyword: k.keyword, ...result });
+
+      // Save result to database
+      await fetch('/api/client-results', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          client_keyword_id: k.id, 
+          result_JSON: result, 
+          date: today 
+        })
+      });
+      
+    } catch (e) {
+      console.error('❌ Network/fetch error for', k.keyword, ':', e);
+      
+      // Keep existing result if available
+      const existingResult = clientResults.find(r => r.keyword === k.keyword);
+      if (existingResult) {
+        newResults.push(existingResult);
+      } else {
+        newResults.push({
+          keyword: k.keyword,
+          organicRank: 'Network Error',
+          localRank: 'Network Error',
+          paa: [],
+          error: 'Network error - check connection'
+        });
+      }
+      apiErrorOccurred = true;
     }
-    loading = false;
+  }
+  
+  // Only update clientResults if we have new data
+  clientResults = newResults;
+  
+  // Set appropriate error messages
+  if (apiErrorOccurred) {
+    error = 'Some API requests failed. Check your SerpAPI key and quota. Previous results preserved where possible.';
+  } else {
+    error = ''; // Clear any previous errors
     lastUpdated = new Date().toLocaleString();
   }
+  
+  loading = false;
+}
 
   // Fetch clients
   async function fetchClients() {
@@ -660,6 +786,19 @@
       }
     } else {
       error = data.error;
+    }
+  }
+
+  // Handle timeframe change for analytics
+  function onTimeframeChange() {
+    loadHistoricalData(analyticsAccount === 'purplefish' ? 'purplefish' : 'client', selectedClient?.id);
+  }
+
+  // Handle custom date range change
+  function onCustomDateChange() {
+    if (customDateFrom && customDateTo) {
+      // Load historical data for the custom date range
+      loadHistoricalData(analyticsAccount === 'purplefish' ? 'purplefish' : 'client', selectedClient?.id);
     }
   }
 </script>
@@ -889,6 +1028,36 @@
           </select>
         </label>
       </div>
+
+      <!-- Add this to your analytics section, before the keyword checkboxes -->
+      {#if currentView === 'analytics'}
+        <div class="analytics-controls">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="timeframe">Time Frame:</label>
+              <select id="timeframe" bind:value={selectedTimeframe} on:change={onTimeframeChange}>
+                <option value="7">Last 7 days</option>
+                <option value="14">Last 2 weeks</option>
+                <option value="30">Last 30 days</option>
+                <option value="60">Last 2 months</option>
+                <option value="90">Last 3 months</option>
+                <option value="180">Last 6 months</option>
+                <option value="365">Last year</option>
+                <option value="all">All time</option>
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label for="date-from">Custom Range:</label>
+              <div class="date-range">
+                <input type="date" id="date-from" bind:value={customDateFrom} on:change={onCustomDateChange}>
+                <span>to</span>
+                <input type="date" id="date-to" bind:value={customDateTo} on:change={onCustomDateChange}>
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
 
       {#if availableKeywords.length > 0}
         <!-- Keyword Selection -->
@@ -1219,6 +1388,37 @@ select {
 select:focus {
   border-color: var(--primary2);
 }
+
+.analytics-controls {
+    background: #f8f9fa;
+    padding: 1.5em;
+    border-radius: var(--radius);
+    margin-bottom: 1.5em;
+    border: 1px solid #e1e5e9;
+  }
+
+  .date-range {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+  }
+
+  .date-range input[type="date"] {
+    padding: 0.5em;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.9em;
+  }
+
+  .date-range span {
+    color: #666;
+    font-size: 0.9em;
+  }
+
+  /* Update the timeframe selector option */
+  .analytics-controls select {
+    min-width: 150px;
+  }
 
 @media (max-width: 800px) {
   .main-container {
