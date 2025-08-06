@@ -789,18 +789,39 @@
     }
   }
 
-  // Handle timeframe change for analytics
-  function onTimeframeChange() {
-    loadHistoricalData(analyticsAccount === 'purplefish' ? 'purplefish' : 'client', selectedClient?.id);
-  }
-
   // Handle custom date range change
   function onCustomDateChange() {
-    if (customDateFrom && customDateTo) {
-      // Load historical data for the custom date range
-      loadHistoricalData(analyticsAccount === 'purplefish' ? 'purplefish' : 'client', selectedClient?.id);
+  // If both dates are filled and valid, automatically switch to custom
+  if (customDateFrom && customDateTo && customDateFrom <= customDateTo) {
+    selectedTimeframe = 'custom';  // Auto-switch to custom
+    
+    // Reload data with custom range
+    if (analyticsAccount === 'purplefish') {
+      loadHistoricalData('purplefish');
+    } else {
+      const clientId = parseInt(analyticsAccount);
+      loadHistoricalData('client', clientId);
     }
   }
+}
+
+// Handle timeframe changes
+function onTimeframeChange() {
+  // Only clear dates if switching away from custom AND dates weren't manually set
+  if (selectedTimeframe !== 'custom') {
+    // Don't auto-clear dates - let user keep them for future use
+    // customDateFrom = '';
+    // customDateTo = '';
+  }
+  
+  // Reload data with new timeframe
+  if (analyticsAccount === 'purplefish') {
+    loadHistoricalData('purplefish');
+  } else {
+    const clientId = parseInt(analyticsAccount);
+    loadHistoricalData('client', clientId);
+  }
+}
 </script>
 
 <div class="app-container">
@@ -1044,15 +1065,22 @@
                 <option value="180">Last 6 months</option>
                 <option value="365">Last year</option>
                 <option value="all">All time</option>
+                <option value="custom">Custom Range</option>
               </select>
             </div>
             
             <div class="form-group">
               <label for="date-from">Custom Range:</label>
               <div class="date-range">
-                <input type="date" id="date-from" bind:value={customDateFrom} on:change={onCustomDateChange}>
+                <input type="date" 
+                       id="date-from" 
+                       bind:value={customDateFrom} 
+                       on:change={onCustomDateChange}>
                 <span>to</span>
-                <input type="date" id="date-to" bind:value={customDateTo} on:change={onCustomDateChange}>
+                <input type="date" 
+                       id="date-to" 
+                       bind:value={customDateTo} 
+                       on:change={onCustomDateChange}>
               </div>
             </div>
           </div>
