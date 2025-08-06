@@ -118,7 +118,7 @@ npm run dev
 6. **Open your browser**
 Navigate to `http://localhost:5173`
 
-## 🔧 Usage
+## Usage
 
 ### Initial Setup
 1. Enter your SerpAPI key in the password field
@@ -156,7 +156,7 @@ Navigate to `http://localhost:5173`
 - Separate keyword sets
 - Client-specific analytics
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 - **Frontend**: SvelteKit, TypeScript, Chart.js
 - **Backend**: SvelteKit API routes
