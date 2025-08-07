@@ -804,7 +804,56 @@
     }
   }
 }
+// Add this function to your <script> section - it's missing!
 
+// Helper function to download CSV
+function downloadCSV(data, filename) {
+  if (data.length === 0) {
+    error = 'No data to export.';
+    return;
+  }
+  
+  // Convert to CSV with proper escaping
+  const headers = Object.keys(data[0]);
+  const csvContent = [
+    headers.join(','),
+    ...data.map(row => 
+      headers.map(header => {
+        let value = row[header] || '';
+        
+        // Convert to string if not already
+        value = String(value);
+        
+        // Always wrap in quotes if contains comma, semicolon, quote, or newline
+        if (value.includes(',') || value.includes(';') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
+          // Escape any existing quotes by doubling them
+          value = value.replace(/"/g, '""');
+          return `"${value}"`;
+        }
+        
+        return value;
+      }).join(',')
+    )
+  ].join('\n');
+  
+  // Download
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  
+  if (link.download !== undefined) {
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+  
+  // Show success message
+  error = `✅ Downloaded ${data.length} records to ${filename}`;
+  setTimeout(() => { error = ''; }, 3000);
+}
 // Handle timeframe changes
 function onTimeframeChange() {
   // Only clear dates if switching away from custom AND dates weren't manually set
@@ -820,6 +869,148 @@ function onTimeframeChange() {
   } else {
     const clientId = parseInt(analyticsAccount);
     loadHistoricalData('client', clientId);
+  }
+}
+
+// Add these functions after your existing functions
+
+// Export historical data for analytics
+function exportHistoricalData() {
+  if (historicalData.length === 0) {
+    error = 'No historical data to export. Select keywords and timeframe first.';
+    return;
+  }
+  
+  const dataToExport = [];
+  
+  // Process historical data for selected keywords
+  Array.from(selectedKeywords).forEach(keyword => {
+    const keywordData = historicalData.filter(d => {
+      const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
+      return keywordName === keyword;
+    });
+    
+    keywordData.forEach(d => {
+      const rank = d.result_JSON?.organicRank;
+      const localRank = d.result_JSON?.localRank;
+      const paa = d.result_JSON?.paa || [];
+      
+      dataToExport.push({
+        Account: analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client',
+        Keyword: keyword,
+        Date: d.date,
+        'Organic Rank': rank === 'Not found' || rank === null ? '' : rank,
+        'Local Rank': localRank === 'Not found' || localRank === null ? '' : localRank,
+        'People Also Ask': paa.join(' | '),
+        'Has Organic Ranking': rank !== 'Not found' && rank !== null ? 'Yes' : 'No',
+        'Has Local Ranking': localRank !== 'Not found' && localRank !== null ? 'Yes' : 'No'
+      });
+    });
+  });
+  
+  // Sort by keyword (A-Z), then by date (newest first)
+  dataToExport.sort((a, b) => {
+    const keywordCompare = a.Keyword.localeCompare(b.Keyword);
+    if (keywordCompare !== 0) return keywordCompare;
+    // Descending date (newest first)
+    return new Date(b.Date).getTime() - new Date(a.Date).getTime();
+  });
+  
+  const accountName = analyticsAccount === 'purplefish' ? 'purplefish' : analyticsClient?.name || 'client';
+  const timeframeName = selectedTimeframe === 'custom' ? `${customDateFrom}-to-${customDateTo}` : `${selectedTimeframe}days`;
+  
+  downloadCSV(dataToExport, `${accountName}-historical-${timeframeName}.csv`);
+}
+
+// Export all historical data for an account
+async function exportAllHistoricalData() {
+  try {
+    loading = true;
+    
+    // Fetch all historical data without date limits
+    const params = new URLSearchParams({
+      type: analyticsAccount === 'purplefish' ? 'purplefish' : 'client',
+      days: 'all'
+    });
+    
+    if (analyticsAccount !== 'purplefish') {
+      params.append('client_id', analyticsAccount);
+    }
+    
+    const resp = await fetch(`/api/historical?${params}`);
+    const allData = await resp.json();
+    
+    if (allData.error) {
+      error = 'Failed to fetch complete historical data.';
+      return;
+    }
+    
+    const dataToExport = allData.map(d => {
+      const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
+      const rank = d.result_JSON?.organicRank;
+      const localRank = d.result_JSON?.localRank;
+      const paa = d.result_JSON?.paa || [];
+      
+      return {
+        Account: analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client',
+        Keyword: keywordName,
+        Date: d.date,
+        'Organic Rank': rank === 'Not found' || rank === null ? '' : rank,
+        'Local Rank': localRank === 'Not found' || localRank === null ? '' : localRank,
+        'People Also Ask': paa.join(' | '),
+        'Has Organic Ranking': rank !== 'Not found' && rank !== null ? 'Yes' : 'No',
+        'Has Local Ranking': localRank !== 'Not found' && localRank !== null ? 'Yes' : 'No',
+        'Created At': new Date(d.created_at).toISOString()
+      };
+    });
+    
+    // Sort by keyword (A-Z), then by date (newest first)
+    dataToExport.sort((a, b) => {
+      const keywordCompare = a.Keyword.localeCompare(b.Keyword);
+      if (keywordCompare !== 0) return keywordCompare;
+      // Descending date (newest first)
+      return new Date(b.Date).getTime() - new Date(a.Date).getTime();
+    });
+    
+    const accountName = analyticsAccount === 'purplefish' ? 'purplefish' : analyticsClient?.name || 'client';
+    downloadCSV(dataToExport, `${accountName}-complete-history.csv`);
+    
+  } catch (e) {
+    error = 'Error exporting historical data: ' + e.message;
+  } finally {
+    loading = false;
+  }
+}
+
+// Export current results to CSV
+function exportCurrentResults() {
+  let dataToExport = [];
+  
+  if (currentView === 'purplefish') {
+    dataToExport = results.map(r => ({
+      Account: 'Purplefish',
+      Keyword: r.keyword,
+      Date: new Date().toISOString().split('T')[0],
+      'Organic Rank': r.organicRank,
+      'Local Rank': r.localRank,
+      'People Also Ask': r.paa ? r.paa.join(' | ') : ''
+    }));
+  } else if (currentView === 'clients' && selectedClient) {
+    dataToExport = clientResults.map(r => ({
+      Account: selectedClient.name,
+      Keyword: r.keyword,
+      Date: new Date().toISOString().split('T')[0],
+      'Organic Rank': r.organicRank,
+      'Local Rank': r.localRank,
+      'People Also Ask': r.paa ? r.paa.join(' | ') : ''
+    }));
+  }
+  
+  // Sort by keyword (A-Z) for current results
+  dataToExport.sort((a, b) => a.Keyword.localeCompare(b.Keyword));
+  
+  if (dataToExport.length > 0) {
+    downloadCSV(dataToExport, `${currentView}-rankings-${new Date().toISOString().split('T')[0]}.csv`);
   }
 }
 </script>
@@ -919,6 +1110,18 @@ function onTimeframeChange() {
 
       {#if lastUpdated}
         <p class="last-updated">Last updated: {lastUpdated}</p>
+      {/if}
+
+      <!-- Add export section after the results table -->
+      {#if results.length > 0}
+        <div class="export-section">
+          <h3>📊 Export Data</h3>
+          <div class="export-buttons">
+            <button on:click={exportCurrentResults} class="export-btn">
+              📋 Export Today's Results
+            </button>
+          </div>
+        </div>
       {/if}
 
     {:else if currentView === 'clients'}
@@ -1034,6 +1237,18 @@ function onTimeframeChange() {
         {/if}
       {/if}
 
+      <!-- Add export section after client results -->
+      {#if selectedClient && clientResults.length > 0}
+        <div class="export-section">
+          <h3>📊 Export Data</h3>
+          <div class="export-buttons">
+            <button on:click={exportCurrentResults} class="export-btn">
+              📋 Export Today's Results
+            </button>
+          </div>
+        </div>
+      {/if}
+
     {:else if currentView === 'analytics'}
       <h1>SEO Analytics & Trends</h1>
       
@@ -1124,6 +1339,26 @@ function onTimeframeChange() {
           <p>Add some keywords and refresh rankings in the {analyticsAccount === 'purplefish' ? 'Purplefish' : 'Clients'} section first.</p>
         </div>
       {/if}
+
+      <!-- Add export section after keyword selection -->
+      {#if availableKeywords.length > 0}
+        <div class="export-section">
+          <h3>📊 Export Historical Data</h3>
+          <div class="export-buttons">
+            {#if selectedKeywords.size > 0}
+              <button on:click={exportHistoricalData} class="export-btn">
+                📈 Export Selected Keywords ({selectedKeywords.size})
+              </button>
+            {/if}
+            <button on:click={exportAllHistoricalData} class="export-btn" disabled={loading}>
+              📦 Export All Historical Data
+            </button>
+          </div>
+          <p class="helper-text">
+            Selected keywords: exports data for current timeframe • All data: exports complete history
+          </p>
+        </div>
+      {/if}
     {/if}
   </main>
 </div>
@@ -1151,6 +1386,61 @@ body {
 .app-container {
   display: flex;
   min-height: 100vh;
+}
+.export-section {
+  background: #f8f9fa;
+  padding: 1.5em;
+  border-radius: var(--radius);
+  margin-top: 2em;
+  border: 1px solid #e1e5e9;
+}
+
+.export-section h3 {
+  margin-top: 0;
+  margin-bottom: 1em;
+  color: var(--primary2);
+  font-family: 'Raleway', 'Segoe UI', Arial, sans-serif;
+}
+
+.export-buttons {
+  display: flex;
+  gap: 1em;
+  flex-wrap: wrap;
+}
+
+.export-btn {
+  background: linear-gradient(135deg, var(--primary1), var(--primary2));
+  color: white;
+  border: none;
+  padding: 0.8em 1.5em;
+  border-radius: var(--radius);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: 'Raleway', 'Segoe UI', Arial, sans-serif;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.export-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  background: linear-gradient(135deg, var(--primary2), var(--primary3));
+}
+
+.export-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+@media (max-width: 600px) {
+  .export-buttons {
+    flex-direction: column;
+  }
+  
+  .export-btn {
+    width: 100%;
+  }
 }
 
 .sidebar {
@@ -1447,6 +1737,45 @@ select:focus {
   .analytics-controls select {
     min-width: 150px;
   }
+
+.export-section {
+  background: #f8f9fa;
+  padding: 1.5em;
+  border-radius: var(--radius);
+  margin-top: 2em;
+  text-align: center;
+}
+
+.export-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 1em;
+  margin-top: 1em;
+}
+
+.export-btn {
+  background: linear-gradient(90deg, var(--primary1), var(--primary2), var(--primary3));
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.6em 1.5em;
+  font-size: 1em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  box-shadow: 0 2px 8px #0001;
+  font-family: 'Raleway', 'Segoe UI', Arial, sans-serif;
+}
+
+.export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: linear-gradient(90deg, var(--primary3), var(--primary2), var(--primary1));
+  transform: translateY(-2px) scale(1.04);
+}
 
 @media (max-width: 800px) {
   .main-container {
