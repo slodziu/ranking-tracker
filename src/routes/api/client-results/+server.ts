@@ -44,7 +44,7 @@ export const POST = async ({ request }) => {
   const { client_keyword_id, result_JSON, date } = await request.json();
   const { data, error } = await supabase
     .from('client_results')
-    .upsert([{ client_keyword_id, result_JSON, date }], { onConflict: ['client_keyword_id', 'date'] })
+    .upsert([{ client_keyword_id, result_JSON, date }], { onConflict: 'client_keyword_id,date' })
     .select();
   if (error) return json({ error: error.message }, { status: 500 });
   return json(data[0]);

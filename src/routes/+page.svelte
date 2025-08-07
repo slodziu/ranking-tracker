@@ -4,9 +4,10 @@
   import Chart from 'chart.js/auto';
   import 'chartjs-adapter-date-fns';
   import { injectAnalytics } from '@vercel/analytics/sveltekit'
+  
   // Navigation state
   injectAnalytics({ mode: dev ? 'development' : 'production' });
-  let currentView = 'purplefish'; // 'purplefish', 'clients', or 'analytics'
+  let currentView = 'purplefish';
   let selectedClient: any = null;
   let clients: any[] = [];
   
@@ -29,7 +30,7 @@
   let showAddClient = false;
 
   // Analytics/Graph variables
-  let analyticsAccount = 'purplefish'; // 'purplefish' or client ID
+  let analyticsAccount = 'purplefish';
   let analyticsClient: any = null;
   let availableKeywords: string[] = [];
   let selectedKeywords: Set<string> = new Set();
@@ -37,10 +38,18 @@
   let chartCanvas: HTMLCanvasElement;
 
   // New variables for historical data and timeframe selection
-  let selectedTimeframe = '30'; // Default to 30 days
+  let selectedTimeframe = '30';
   let customDateFrom = '';
   let customDateTo = '';
   let historicalData: any[] = [];
+
+  // Ranking changes notification
+  let rankingChanges: any[] = [];
+  let notificationExpanded = false;
+  let lastKnownResults: any = {};
+  let showNotificationBanner = false;
+  let notificationBannerMessage = '';
+  let notificationBannerType = 'info'; // 'success', 'warning', 'info', 'error'
 
   // Auto-load Purplefish data on page load
   async function autoLoadPurplefishData() {
@@ -56,7 +65,6 @@
       if (cached && cached.result_JSON !== null) {
         results = [...results, { keyword: k.keyword, ...cached.result_JSON }];
       } else {
-        // Add placeholder for keywords that need fresh data
         results = [...results, { 
           keyword: k.keyword, 
           organicRank: 'No data for today', 
@@ -92,7 +100,6 @@
         if (cached && cached.result_JSON !== null) {
           clientResults = [...clientResults, { keyword: k.keyword, ...cached.result_JSON }];
         } else {
-          // Add placeholder for keywords that need fresh data
           clientResults = [...clientResults, { 
             keyword: k.keyword, 
             organicRank: 'No data for today', 
@@ -111,112 +118,6 @@
       error = 'Could not load client data from database.';
     }
   }
-
-  // Switch between views
-  function switchView(view: string) {
-    currentView = view;
-    error = '';
-    
-    // Auto-load data when switching views
-    if (view === 'purplefish' && keywords.length > 0) {
-      autoLoadPurplefishData();
-    } else if (view === 'clients' && selectedClient && clientKeywords.length > 0) {
-      autoLoadClientData();
-    } else if (view === 'analytics') {
-      loadAnalyticsData();
-    } else {
-      results = [];
-      clientResults = [];
-    }
-  }
-
-  // Load analytics data when account changes
-  async function loadAnalyticsData() {
-  if (analyticsAccount === 'purplefish') {
-    // Load Purplefish keywords
-    await loadHistoricalData('purplefish');
-    // Filter keywords that have at least one ranking position
-    availableKeywords = keywords
-      .map(k => k.keyword)
-      .filter(keyword => {
-        return historicalData.some(d => {
-          const keywordName = d.keywords?.keyword;
-          const rank = d.result_JSON?.organicRank;
-          return keywordName === keyword && rank !== 'Not found' && rank !== null && rank !== undefined;
-        });
-      });
-  } else {
-    // Load client keywords
-    const clientId = parseInt(analyticsAccount);
-    analyticsClient = clients.find(c => c.id === clientId);
-    
-    if (analyticsClient) {
-      // Fetch client keywords
-      const resp = await fetch(`/api/client-keywords?client_id=${clientId}`);
-      const data = await resp.json();
-      if (!data.error) {
-        await loadHistoricalData('client', clientId);
-        // Filter keywords that have at least one ranking position
-        availableKeywords = data
-          .map((k: any) => k.keyword)
-          .filter(keyword => {
-            return historicalData.some(d => {
-              const keywordName = d.client_keywords?.keyword;
-              const rank = d.result_JSON?.organicRank;
-              return keywordName === keyword && rank !== 'Not found' && rank !== null && rank !== undefined;
-            });
-          });
-      }
-    }
-  }
-  selectedKeywords.clear();
-  updateChart();
-}
-
-  // Load historical data for chart
-  async function loadHistoricalData(type: string, clientId?: number) {
-    console.log('🔄 Loading historical data:', { type, clientId, timeframe: selectedTimeframe });
-    
-    const params = new URLSearchParams({
-      type,
-      days: selectedTimeframe
-    });
-    
-    // Add custom date range if specified
-    if (selectedTimeframe === 'custom' && customDateFrom && customDateTo) {
-      params.set('date_from', customDateFrom);
-      params.set('date_to', customDateTo);
-      params.delete('days'); // Don't use days for custom range
-    }
-    
-    if (type === 'client' && clientId) {
-      params.append('client_id', clientId.toString());
-    }
-
-    try {
-      const resp = await fetch(`/api/historical?${params}`);
-      const data = await resp.json();
-      
-      console.log('📥 Historical data response:', data);
-      
-      if (!data.error) {
-        historicalData = data;
-        console.log('✅ Historical data loaded:', historicalData.length, 'records');
-        
-        // Update chart if keywords are selected
-        if (selectedKeywords.size > 0) {
-          updateChart();
-        }
-      } else {
-        console.error('❌ API error:', data.error);
-        historicalData = [];
-      }
-    } catch (e) {
-      console.error('❌ Error loading historical data:', e);
-      historicalData = [];
-    }
-  }
-
   // Toggle keyword selection for chart
   function toggleKeyword(keyword: string) {
     if (selectedKeywords.has(keyword)) {
@@ -224,200 +125,166 @@
     } else {
       selectedKeywords.add(keyword);
     }
-    selectedKeywords = selectedKeywords; // Trigger reactivity
+    selectedKeywords = selectedKeywords;
     updateChart();
   }
 
   // Update chart with selected keywords
   function updateChart() {
-  console.log('🔍 DEBUG: updateChart called');
-  console.log('📊 Selected keywords:', Array.from(selectedKeywords));
-  console.log('📈 Historical data:', historicalData);
-  
-  // Destroy existing chart first
-  if (chartInstance) {
-    chartInstance.destroy();
-    chartInstance = null;
-  }
-  
-  // Don't create chart if no keywords selected OR no canvas
-  if (!chartCanvas || selectedKeywords.size === 0) {
-    console.log('❌ No canvas or no keywords selected');
-    return;
-  }
-
-  const datasets = [];
-  const colors = ['#55c39f', '#676fff', '#d66f8d', '#f39c12', '#9b59b6', '#1abc9c'];
-  let colorIndex = 0;
-
-  Array.from(selectedKeywords).forEach(keyword => {
-    console.log(`🔎 Processing keyword: ${keyword}`);
+    if (chartInstance) {
+      chartInstance.destroy();
+      chartInstance = null;
+    }
     
-    const keywordData = historicalData
-      .filter(d => {
-        const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
-        const matches = keywordName === keyword;
-        console.log(`  📝 Data point: ${keywordName} matches ${keyword}? ${matches}`, d);
-        return matches;
-      })
-      .map(d => {
-        const rank = d.result_JSON?.organicRank;
-        const dataPoint = {
-          x: d.date,
-          y: rank === 'Not found' || rank === null || rank === undefined ? null : parseInt(rank) || null,
-          originalRank: rank
-        };
-        console.log(`  📊 Data point mapped:`, dataPoint);
-        return dataPoint;
-      })
-      .filter(d => {
-        const hasValidY = d.y !== null;
-        console.log(`  ✅ Data point has valid Y (${d.y})?`, hasValidY);
-        return hasValidY;
-      })
-      .sort((a, b) => new Date(a.x).getTime() - new Date(b.x).getTime());
-
-    console.log(`📈 Final keyword data for ${keyword}:`, keywordData);
-
-    if (keywordData.length > 0) {
-      datasets.push({
-        label: keyword,
-        data: keywordData,
-        borderColor: colors[colorIndex % colors.length],
-        backgroundColor: colors[colorIndex % colors.length] + '40',
-        fill: false,
-        tension: 0.1,
-        pointRadius: 8,
-        pointHoverRadius: 12,
-        pointBackgroundColor: colors[colorIndex % colors.length],
-        pointBorderColor: '#fff',
-        pointBorderWidth: 2,
-        borderWidth: 4
-      });
-      colorIndex++;
+    if (!chartCanvas || selectedKeywords.size === 0) {
+      return;
     }
-  });
 
-  console.log('📊 Final datasets:', datasets);
+    const datasets = [];
+    const colors = ['#55c39f', '#676fff', '#d66f8d', '#f39c12', '#9b59b6', '#1abc9c'];
+    let colorIndex = 0;
 
-  // CRITICAL FIX: Only create chart if we have datasets with data
-  if (datasets.length === 0) {
-    console.log('❌ No datasets with data, not creating chart');
-    return;
-  }
+    Array.from(selectedKeywords).forEach(keyword => {
+      const keywordData = historicalData
+        .filter(d => {
+          const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
+          return keywordName === keyword;
+        })
+        .map(d => {
+          const rank = d.result_JSON?.organicRank;
+          return {
+            x: d.date,
+            y: rank === 'Not found' || rank === null || rank === undefined ? null : parseInt(rank) || null
+          };
+        })
+        .filter(d => d.y !== null)
+        .sort((a, b) => new Date(a.x).getTime() - new Date(b.x).getTime());
 
-  // Find date range
-  let minDate = null;
-  let maxDate = null;
-  
-  datasets.forEach(dataset => {
-    if (dataset.data.length > 0) {
-      const firstDate = new Date(dataset.data[0].x);
-      const lastDate = new Date(dataset.data[dataset.data.length - 1].x);
-      
-      if (!minDate || firstDate < minDate) minDate = firstDate;
-      if (!maxDate || lastDate > maxDate) maxDate = lastDate;
+      if (keywordData.length > 0) {
+        datasets.push({
+          label: keyword,
+          data: keywordData,
+          borderColor: colors[colorIndex % colors.length],
+          backgroundColor: colors[colorIndex % colors.length] + '40',
+          fill: false,
+          tension: 0.1,
+          pointRadius: 8,
+          pointHoverRadius: 12,
+          pointBackgroundColor: colors[colorIndex % colors.length],
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2,
+          borderWidth: 4
+        });
+        colorIndex++;
+      }
+    });
+
+    if (datasets.length === 0) {
+      return;
     }
-  });
 
-  console.log('📅 Creating chart with date range:', { minDate, maxDate });
+    let minDate = null;
+    let maxDate = null;
+    
+    datasets.forEach(dataset => {
+      if (dataset.data.length > 0) {
+        const firstDate = new Date(dataset.data[0].x);
+        const lastDate = new Date(dataset.data[dataset.data.length - 1].x);
+        
+        if (!minDate || firstDate < minDate) minDate = firstDate;
+        if (!maxDate || lastDate > maxDate) maxDate = lastDate;
+      }
+    });
 
-  // Create the chart - only when we have valid datasets
-  chartInstance = new Chart(chartCanvas, {
-    type: 'line',
-    data: { datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: {
-        intersect: false,
-        mode: 'index'
-      },
-      scales: {
-        x: {
-          type: 'time',
-          time: {
-            unit: 'day',
-            displayFormats: {
-              day: 'MMM dd'
+    chartInstance = new Chart(chartCanvas, {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          intersect: false,
+          mode: 'index'
+        },
+        scales: {
+          x: {
+            type: 'time',
+            time: {
+              unit: 'day',
+              displayFormats: {
+                day: 'MMM dd'
+              }
+            },
+            min: minDate,
+            max: maxDate,
+            title: {
+              display: true,
+              text: 'Date',
+              font: {
+                family: 'Raleway',
+                size: 14
+              }
             }
           },
-          min: minDate,
-          max: maxDate,
-          title: {
-            display: true,
-            text: 'Date',
-            font: {
-              family: 'Raleway',
-              size: 14
+          y: {
+            reverse: true,
+            min: 1,
+            suggestedMax: 10,
+            title: {
+              display: true,
+              text: 'Ranking Position',
+              font: {
+                family: 'Raleway',
+                size: 14
+              }
+            },
+            ticks: {
+              stepSize: 1
             }
           }
         },
-        y: {
-          reverse: true,
-          min: 1,
-          suggestedMax: 10,
+        plugins: {
           title: {
             display: true,
-            text: 'Ranking Position',
+            text: `${analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client'} - Organic Ranking Over Time`,
             font: {
               family: 'Raleway',
-              size: 14
+              size: 16,
+              weight: 'bold'
             }
           },
-          ticks: {
-            stepSize: 1
-          }
-        }
-      },
-      elements: {
-        point: {
-          radius: 6,
-          hoverRadius: 8
-        },
-        line: {
-          borderWidth: 3
-        }
-      },
-      plugins: {
-        title: {
-          display: true,
-          text: `${analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client'} - Organic Ranking Over Time`,
-          font: {
-            family: 'Raleway',
-            size: 16,
-            weight: 'bold'
-          }
-        },
-        legend: {
-          display: true,
-          labels: {
-            font: {
-              family: 'Raleway'
+          legend: {
+            display: true,
+            labels: {
+              font: {
+                family: 'Raleway'
+              }
             }
           }
         }
       }
+    });
+  }
+
+
+  // Auto-load Purplefish data on page load
+  onMount(async () => {
+    // Load initial data
+    keywords = await fetchKeywords();
+    await fetchClients();
+    
+    // Auto-load data based on current view
+    if (currentView === 'purplefish' && keywords.length > 0) {
+      await autoLoadPurplefishData();
+    } else if (currentView === 'analytics') {
+      await loadAnalyticsData();
+    }
+    
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
     }
   });
-
-  console.log('✅ Chart created successfully');
-}
-  // Watch for analytics account changes
-  $: if (analyticsAccount) {
-    loadAnalyticsData();
-  }
-
-  // Update selectClient to auto-load data
-  async function selectClient(client: any) {
-    selectedClient = client;
-    const resp = await fetch(`/api/client-keywords?client_id=${client.id}`);
-    const data = await resp.json();
-    if (!data.error) {
-      clientKeywords = data;
-      await autoLoadClientData(); // Auto-load after getting keywords
-    }
-  }
 
   // Modified fetchClientRankings to preserve data on API errors
   async function fetchClientRankings() {
@@ -562,6 +429,9 @@
     }
   }
   
+  // Detect ranking changes after fetching client results
+  await detectRankingChanges(newResults, 'client');
+  
   // Only update clientResults if we have new data
   clientResults = newResults;
   
@@ -621,7 +491,33 @@
       if (!data.error) {
         clientKeywords = [...clientKeywords, data];
         newClientKeyword = '';
+        // Fetch rankings to detect new keyword appearance
+        fetchClientRankings();
       }
+    }
+  }
+
+  // Select client and load their keywords
+  async function selectClient(client: any) {
+    if (client && client.id) {
+      selectedClient = client;
+      
+      // Load keywords for the selected client
+      const resp = await fetch(`/api/client-keywords?client_id=${client.id}`);
+      const data = await resp.json();
+      if (!data.error) {
+        clientKeywords = data;
+        // Auto-load data if we're in client view
+        if (currentView === 'clients') {
+          await autoLoadClientData();
+        }
+      } else {
+        error = data.error;
+      }
+    } else {
+      selectedClient = null;
+      clientKeywords = [];
+      clientResults = [];
     }
   }
 
@@ -668,6 +564,13 @@
 
   // Delete a keyword from Supabase
   async function deleteKeyword(id: number) {
+    const keywordToDelete = keywords.find(k => k.id === id);
+    const keywordName = keywordToDelete?.keyword || 'this keyword';
+    
+    if (!confirm(`Are you sure you want to delete "${keywordName}"? This will also delete all historical data for this keyword. This action cannot be undone.`)) {
+      return;
+    }
+    
     const resp = await fetch('/api/keywords', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -677,7 +580,9 @@
     if (!data.error) {
       keywords = keywords.filter(k => k.id !== id);
       // Optionally, refresh results
-      results = results.filter(r => r.keyword !== keywords.find(k => k.id === id)?.keyword);
+      results = results.filter(r => r.keyword !== keywordName);
+      error = `✅ Keyword "${keywordName}" has been deleted successfully.`;
+      setTimeout(() => { error = ''; }, 3000);
     } else {
       error = data.error;
     }
@@ -691,7 +596,8 @@
     }
     loading = true;
     error = '';
-    results = [];
+    
+    const newResults = [];
     const todayResults = await fetchResults();
     
     for (const k of keywords) {
@@ -699,7 +605,7 @@
       
       // Check if cached result exists AND has valid result_JSON (not null)
       if (cached && cached.result_JSON !== null) {
-        results = [...results, { keyword: k.keyword, ...cached.result_JSON }];
+        newResults.push({ keyword: k.keyword, ...cached.result_JSON });
         continue;
       }
       
@@ -727,7 +633,7 @@
           localRank: pfLocalIndex >= 0 ? pfLocalIndex + 1 : 'Not found',
           paa
         };
-        results = [...results, { keyword: k.keyword, ...result }];
+        newResults.push({ keyword: k.keyword, ...result });
 
         // Save/update result to Supabase
         const today = new Date().toISOString().slice(0, 10);
@@ -737,35 +643,37 @@
           body: JSON.stringify({ keyword_id: k.id, result_JSON: result, date: today })
         });
       } catch (e) {
-        results = [...results, {
+        newResults.push({
           keyword: k.keyword,
           organicRank: 'Error',
           localRank: 'Error',
           paa: [],
           error: 'Error fetching this keyword'
-        }];
+        });
         error = 'Some keywords could not be fetched. Check your API key and quota.';
       }
     }
+    
+    // Detect ranking changes after fetching
+    await detectRankingChanges(newResults, 'purplefish');
+    
+    results = newResults;
     loading = false;
     lastUpdated = new Date().toLocaleString();
   }
-
-  // On mount: fetch keywords, then fetch rankings
-  onMount(async () => {
-    keywords = await fetchKeywords();
-    await fetchClients();
-    
-    // Auto-load Purplefish data if keywords exist
-    if (keywords.length > 0) {
-      await autoLoadPurplefishData();
-    }
-  });
 
   // Add this function after your other functions
   async function deleteClientKeyword(id: number | undefined) {
     if (!id) {
       error = 'Cannot delete keyword: ID not found';
+      return;
+    }
+    
+    const keywordToDelete = clientKeywords.find(k => k.id === id);
+    const keywordName = keywordToDelete?.keyword || 'this keyword';
+    const clientName = selectedClient?.name || 'this client';
+    
+    if (!confirm(`Are you sure you want to delete "${keywordName}" for ${clientName}? This will also delete all historical data for this keyword. This action cannot be undone.`)) {
       return;
     }
     
@@ -784,184 +692,95 @@
       if (deletedKeyword) {
         clientResults = clientResults.filter(r => r.keyword !== deletedKeyword.keyword);
       }
+      error = `✅ Keyword "${keywordName}" has been deleted successfully for ${clientName}.`;
+      setTimeout(() => { error = ''; }, 3000);
     } else {
       error = data.error;
     }
   }
 
-  // Handle custom date range change
-  function onCustomDateChange() {
-  // If both dates are filled and valid, automatically switch to custom
-  if (customDateFrom && customDateTo && customDateFrom <= customDateTo) {
-    selectedTimeframe = 'custom';  // Auto-switch to custom
-    
-    // Reload data with custom range
-    if (analyticsAccount === 'purplefish') {
-      loadHistoricalData('purplefish');
-    } else {
-      const clientId = parseInt(analyticsAccount);
-      loadHistoricalData('client', clientId);
-    }
-  }
-}
-// Add this function to your <script> section - it's missing!
-
-// Helper function to download CSV
-function downloadCSV(data, filename) {
-  if (data.length === 0) {
-    error = 'No data to export.';
-    return;
-  }
-  
-  // Convert to CSV with proper escaping
-  const headers = Object.keys(data[0]);
-  const csvContent = [
-    headers.join(','),
-    ...data.map(row => 
-      headers.map(header => {
-        let value = row[header] || '';
-        
-        // Convert to string if not already
-        value = String(value);
-        
-        // Always wrap in quotes if contains comma, semicolon, quote, or newline
-        if (value.includes(',') || value.includes(';') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
-          // Escape any existing quotes by doubling them
-          value = value.replace(/"/g, '""');
-          return `"${value}"`;
-        }
-        
-        return value;
-      }).join(',')
-    )
-  ].join('\n');
-  
-  // Download
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  
-  if (link.download !== undefined) {
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', filename);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }
-  
-  // Show success message
-  error = `✅ Downloaded ${data.length} records to ${filename}`;
-  setTimeout(() => { error = ''; }, 3000);
-}
-// Handle timeframe changes
-function onTimeframeChange() {
-  // Only clear dates if switching away from custom AND dates weren't manually set
-  if (selectedTimeframe !== 'custom') {
-    // Don't auto-clear dates - let user keep them for future use
-    // customDateFrom = '';
-    // customDateTo = '';
-  }
-  
-  // Reload data with new timeframe
-  if (analyticsAccount === 'purplefish') {
-    loadHistoricalData('purplefish');
-  } else {
-    const clientId = parseInt(analyticsAccount);
-    loadHistoricalData('client', clientId);
-  }
-}
-
-// Add these functions after your existing functions
-
-// Export historical data for analytics
-function exportHistoricalData() {
-  if (historicalData.length === 0) {
-    error = 'No historical data to export. Select keywords and timeframe first.';
-    return;
-  }
-  
-  const dataToExport = [];
-  
-  // Process historical data for selected keywords
-  Array.from(selectedKeywords).forEach(keyword => {
-    const keywordData = historicalData.filter(d => {
-      const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
-      return keywordName === keyword;
-    });
-    
-    keywordData.forEach(d => {
-      const rank = d.result_JSON?.organicRank;
-      const localRank = d.result_JSON?.localRank;
-      const paa = d.result_JSON?.paa || [];
-      
-      dataToExport.push({
-        Account: analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client',
-        Keyword: keyword,
-        Date: d.date,
-        'Organic Rank': rank === 'Not found' || rank === null ? '' : rank,
-        'Local Rank': localRank === 'Not found' || localRank === null ? '' : localRank,
-        'People Also Ask': paa.join(' | '),
-        'Has Organic Ranking': rank !== 'Not found' && rank !== null ? 'Yes' : 'No',
-        'Has Local Ranking': localRank !== 'Not found' && localRank !== null ? 'Yes' : 'No'
-      });
-    });
-  });
-  
-  // Sort by keyword (A-Z), then by date (newest first)
-  dataToExport.sort((a, b) => {
-    const keywordCompare = a.Keyword.localeCompare(b.Keyword);
-    if (keywordCompare !== 0) return keywordCompare;
-    // Descending date (newest first)
-    return new Date(b.Date).getTime() - new Date(a.Date).getTime();
-  });
-  
-  const accountName = analyticsAccount === 'purplefish' ? 'purplefish' : analyticsClient?.name || 'client';
-  const timeframeName = selectedTimeframe === 'custom' ? `${customDateFrom}-to-${customDateTo}` : `${selectedTimeframe}days`;
-  
-  downloadCSV(dataToExport, `${accountName}-historical-${timeframeName}.csv`);
-}
-
-// Export all historical data for an account
-async function exportAllHistoricalData() {
-  try {
-    loading = true;
-    
-    // Fetch all historical data without date limits
-    const params = new URLSearchParams({
-      type: analyticsAccount === 'purplefish' ? 'purplefish' : 'client',
-      days: 'all'
-    });
-    
-    if (analyticsAccount !== 'purplefish') {
-      params.append('client_id', analyticsAccount);
-    }
-    
-    const resp = await fetch(`/api/historical?${params}`);
-    const allData = await resp.json();
-    
-    if (allData.error) {
-      error = 'Failed to fetch complete historical data.';
+  // Helper function to download CSV
+  function downloadCSV(data, filename) {
+    if (data.length === 0) {
+      error = 'No data to export.';
       return;
     }
     
-    const dataToExport = allData.map(d => {
-      const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
-      const rank = d.result_JSON?.organicRank;
-      const localRank = d.result_JSON?.localRank;
-      const paa = d.result_JSON?.paa || [];
+    // Convert to CSV with proper escaping
+    const headers = Object.keys(data[0]);
+    const csvContent = [
+      headers.join(','),
+      ...data.map(row => 
+        headers.map(header => {
+          let value = row[header] || '';
+          
+          // Convert to string if not already
+          value = String(value);
+          
+          // Always wrap in quotes if contains comma, semicolon, quote, or newline
+          if (value.includes(',') || value.includes(';') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
+            // Escape any existing quotes by doubling them
+            value = value.replace(/"/g, '""');
+            return `"${value}"`;
+          }
+          
+          return value;
+        }).join(',')
+      )
+    ].join('\n');
+    
+    // Download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+    
+    // Show success message
+    error = `✅ Downloaded ${data.length} records to ${filename}`;
+    setTimeout(() => { error = ''; }, 3000);
+  }
+
+
+  // Export historical data for analytics
+  function exportHistoricalData() {
+    if (historicalData.length === 0) {
+      error = 'No historical data to export. Select keywords and timeframe first.';
+      return;
+    }
+    
+    const dataToExport = [];
+    
+    // Process historical data for selected keywords
+    Array.from(selectedKeywords).forEach(keyword => {
+      const keywordData = historicalData.filter(d => {
+        const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
+        return keywordName === keyword;
+      });
       
-      return {
-        Account: analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client',
-        Keyword: keywordName,
-        Date: d.date,
-        'Organic Rank': rank === 'Not found' || rank === null ? '' : rank,
-        'Local Rank': localRank === 'Not found' || localRank === null ? '' : localRank,
-        'People Also Ask': paa.join(' | '),
-        'Has Organic Ranking': rank !== 'Not found' && rank !== null ? 'Yes' : 'No',
-        'Has Local Ranking': localRank !== 'Not found' && localRank !== null ? 'Yes' : 'No',
-        'Created At': new Date(d.created_at).toISOString()
-      };
+      keywordData.forEach(d => {
+        const rank = d.result_JSON?.organicRank;
+        const localRank = d.result_JSON?.localRank;
+        const paa = d.result_JSON?.paa || [];
+        
+        dataToExport.push({
+          Account: analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client',
+          Keyword: keyword,
+          Date: d.date,
+          'Organic Rank': rank === 'Not found' || rank === null ? '' : rank,
+          'Local Rank': localRank === 'Not found' || localRank === null ? '' : localRank,
+          'People Also Ask': paa.join(' | '),
+          'Has Organic Ranking': rank !== 'Not found' && rank !== null ? 'Yes' : 'No',
+          'Has Local Ranking': localRank !== 'Not found' && localRank !== null ? 'Yes' : 'No'
+        });
+      });
     });
     
     // Sort by keyword (A-Z), then by date (newest first)
@@ -973,49 +792,531 @@ async function exportAllHistoricalData() {
     });
     
     const accountName = analyticsAccount === 'purplefish' ? 'purplefish' : analyticsClient?.name || 'client';
-    downloadCSV(dataToExport, `${accountName}-complete-history.csv`);
+    const timeframeName = selectedTimeframe === 'custom' ? `${customDateFrom}-to-${customDateTo}` : `${selectedTimeframe}days`;
     
-  } catch (e) {
-    error = 'Error exporting historical data: ' + e.message;
-  } finally {
-    loading = false;
+    downloadCSV(dataToExport, `${accountName}-historical-${timeframeName}.csv`);
   }
-}
 
-// Export current results to CSV
-function exportCurrentResults() {
-  let dataToExport = [];
-  
-  if (currentView === 'purplefish') {
-    dataToExport = results.map(r => ({
-      Account: 'Purplefish',
-      Keyword: r.keyword,
-      Date: new Date().toISOString().split('T')[0],
-      'Organic Rank': r.organicRank,
-      'Local Rank': r.localRank,
-      'People Also Ask': r.paa ? r.paa.join(' | ') : ''
-    }));
-  } else if (currentView === 'clients' && selectedClient) {
-    dataToExport = clientResults.map(r => ({
-      Account: selectedClient.name,
-      Keyword: r.keyword,
-      Date: new Date().toISOString().split('T')[0],
-      'Organic Rank': r.organicRank,
-      'Local Rank': r.localRank,
-      'People Also Ask': r.paa ? r.paa.join(' | ') : ''
-    }));
+  // Export all historical data for an account
+  async function exportAllHistoricalData() {
+    try {
+      loading = true;
+      
+      // Fetch all historical data without date limits
+      const params = new URLSearchParams({
+        type: analyticsAccount === 'purplefish' ? 'purplefish' : 'client',
+        days: 'all'
+      });
+      
+      if (analyticsAccount !== 'purplefish') {
+        params.append('client_id', analyticsAccount);
+      }
+      
+      const resp = await fetch(`/api/historical?${params}`);
+      const allData = await resp.json();
+      
+      if (allData.error) {
+        error = 'Failed to fetch complete historical data.';
+        return;
+      }
+      
+      const dataToExport = allData.map(d => {
+        const keywordName = d.keywords?.keyword || d.client_keywords?.keyword;
+        const rank = d.result_JSON?.organicRank;
+        const localRank = d.result_JSON?.localRank;
+        const paa = d.result_JSON?.paa || [];
+        
+        return {
+          Account: analyticsAccount === 'purplefish' ? 'Purplefish' : analyticsClient?.name || 'Client',
+          Keyword: keywordName,
+          Date: d.date,
+          'Organic Rank': rank === 'Not found' || rank === null ? '' : rank,
+          'Local Rank': localRank === 'Not found' || localRank === null ? '' : localRank,
+          'People Also Ask': paa.join(' | '),
+          'Has Organic Ranking': rank !== 'Not found' && rank !== null ? 'Yes' : 'No',
+          'Has Local Ranking': localRank !== 'Not found' && localRank !== null ? 'Yes' : 'No',
+          'Created At': new Date(d.created_at).toISOString()
+        };
+      });
+      
+      // Sort by keyword (A-Z), then by date (newest first)
+      dataToExport.sort((a, b) => {
+        const keywordCompare = a.Keyword.localeCompare(b.Keyword);
+        if (keywordCompare !== 0) return keywordCompare;
+        // Descending date (newest first)
+        return new Date(b.Date).getTime() - new Date(a.Date).getTime();
+      });
+      
+      const accountName = analyticsAccount === 'purplefish' ? 'purplefish' : analyticsClient?.name || 'client';
+      downloadCSV(dataToExport, `${accountName}-complete-history.csv`);
+      
+    } catch (e) {
+      error = 'Error exporting historical data: ' + e.message;
+    } finally {
+      loading = false;
+    }
   }
-  
-  // Sort by keyword (A-Z) for current results
-  dataToExport.sort((a, b) => a.Keyword.localeCompare(b.Keyword));
-  
-  if (dataToExport.length > 0) {
-    downloadCSV(dataToExport, `${currentView}-rankings-${new Date().toISOString().split('T')[0]}.csv`);
+
+  // Export current results to CSV
+  function exportCurrentResults() {
+    let dataToExport = [];
+    
+    if (currentView === 'purplefish') {
+      dataToExport = results.map(r => ({
+        Account: 'Purplefish',
+        Keyword: r.keyword,
+        Date: new Date().toISOString().split('T')[0],
+        'Organic Rank': r.organicRank,
+        'Local Rank': r.localRank,
+        'People Also Ask': r.paa ? r.paa.join(' | ') : ''
+      }));
+    } else if (currentView === 'clients' && selectedClient) {
+      dataToExport = clientResults.map(r => ({
+        Account: selectedClient.name,
+        Keyword: r.keyword,
+        Date: new Date().toISOString().split('T')[0],
+        'Organic Rank': r.organicRank,
+        'Local Rank': r.localRank,
+        'People Also Ask': r.paa ? r.paa.join(' | ') : ''
+      }));
+    }
+    
+    // Sort by keyword (A-Z) for current results
+    dataToExport.sort((a, b) => a.Keyword.localeCompare(b.Keyword));
+    
+    if (dataToExport.length > 0) {
+      downloadCSV(dataToExport, `${currentView}-rankings-${new Date().toISOString().split('T')[0]}.csv`);
+    }
   }
-}
+
+
+  // Add this function to detect changes - now uses database instead of localStorage
+  async function detectRankingChanges(newResults: any[], accountType: 'purplefish' | 'client' = 'purplefish') {
+    const changes = [];
+    
+    try {
+      // Fetch previous results from database (yesterday's data)
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      
+      let previousResults = {};
+      
+      if (accountType === 'purplefish') {
+        // Get previous Purplefish results from database
+        const params = new URLSearchParams({
+          type: 'purplefish',
+          date_from: twoDaysAgo,
+          date_to: yesterday
+        });
+        
+        const resp = await fetch(`/api/historical?${params}`);
+        const historicalData = await resp.json();
+        
+        if (!historicalData.error && historicalData.length > 0) {
+          // Get the most recent result for each keyword
+          const keywordLatestResults = {};
+          historicalData.forEach(d => {
+            const keyword = d.keywords?.keyword;
+            if (keyword) {
+              if (!keywordLatestResults[keyword] || d.date > keywordLatestResults[keyword].date) {
+                keywordLatestResults[keyword] = {
+                  organicRank: d.result_JSON?.organicRank,
+                  localRank: d.result_JSON?.localRank,
+                  date: d.date
+                };
+              }
+            }
+          });
+          previousResults = keywordLatestResults;
+        }
+      } else if (accountType === 'client' && selectedClient) {
+        // Get previous client results from database
+        const params = new URLSearchParams({
+          type: 'client',
+          client_id: selectedClient.id.toString(),
+          date_from: twoDaysAgo,
+          date_to: yesterday
+        });
+        
+        const resp = await fetch(`/api/historical?${params}`);
+        const historicalData = await resp.json();
+        
+        if (!historicalData.error && historicalData.length > 0) {
+          // Get the most recent result for each keyword
+          const keywordLatestResults = {};
+          historicalData.forEach(d => {
+            const keyword = d.client_keywords?.keyword;
+            if (keyword) {
+              if (!keywordLatestResults[keyword] || d.date > keywordLatestResults[keyword].date) {
+                keywordLatestResults[keyword] = {
+                  organicRank: d.result_JSON?.organicRank,
+                  localRank: d.result_JSON?.localRank,
+                  date: d.date
+                };
+              }
+            }
+          });
+          previousResults = keywordLatestResults;
+        }
+      }
+      
+      // Compare new results with previous results
+      newResults.forEach(newResult => {
+        const keyword = newResult.keyword;
+        const prevResult = previousResults[keyword];
+        
+        if (!prevResult) {
+          // New keyword or first time ranking - check if it has valid rankings
+          if (newResult.organicRank && newResult.organicRank !== 'Not found' && newResult.organicRank !== 'Error') {
+            changes.push({
+              keyword,
+              type: 'appeared',
+              message: `New keyword "${keyword}" found ranking #${newResult.organicRank} in organic results!`,
+              icon: '🆕',
+              change: `+${newResult.organicRank}`,
+              timestamp: new Date().toISOString()
+            });
+          }
+          if (newResult.localRank && newResult.localRank !== 'Not found' && newResult.localRank !== 'Error') {
+            changes.push({
+              keyword,
+              type: 'appeared',
+              message: `New keyword "${keyword}" found ranking #${newResult.localRank} in local results!`,
+              icon: '🗺️',
+              change: `+${newResult.localRank}`,
+              timestamp: new Date().toISOString()
+            });
+          }
+          return;
+        }
+        
+        // Check organic ranking changes
+        const prevOrganic = prevResult.organicRank;
+        const newOrganic = newResult.organicRank;
+        
+        if (prevOrganic !== newOrganic) {
+          let changeInfo = analyzeRankingChange(keyword, prevOrganic, newOrganic, 'organic');
+          if (changeInfo) changes.push(changeInfo);
+        }
+        
+        // Check local ranking changes
+        const prevLocal = prevResult.localRank;
+        const newLocal = newResult.localRank;
+        
+        if (prevLocal !== newLocal) {
+          let changeInfo = analyzeRankingChange(keyword, prevLocal, newLocal, 'local');
+          if (changeInfo) changes.push(changeInfo);
+        }
+      });
+      
+    } catch (error) {
+      console.error('❌ Error fetching previous results for comparison:', error);
+      // Fall back to basic new keyword detection if database fetch fails
+      newResults.forEach(newResult => {
+        const keyword = newResult.keyword;
+        
+        if (newResult.organicRank && newResult.organicRank !== 'Not found' && newResult.organicRank !== 'Error') {
+          changes.push({
+            keyword,
+            type: 'new_data',
+            message: `Updated ranking data for "${keyword}": #${newResult.organicRank} in organic results`,
+            icon: '📊',
+            change: `#${newResult.organicRank}`,
+            timestamp: new Date().toISOString()
+          });
+        }
+      });
+    }
+    
+    // Show notifications if changes were detected
+    if (changes.length > 0) {
+      rankingChanges = [...rankingChanges, ...changes];
+      
+      // Show notification banner
+      showNotificationBanner = true;
+      const accountName = accountType === 'purplefish' ? 'Purplefish' : selectedClient?.name || 'Client';
+      
+      if (changes.length === 1) {
+        notificationBannerMessage = `📊 ${accountName}: ${changes[0].message}`;
+        notificationBannerType = changes[0].type === 'improved' || changes[0].type === 'appeared' ? 'success' : 'warning';
+      } else {
+        const improvements = changes.filter(c => c.type === 'improved' || c.type === 'appeared').length;
+        const drops = changes.filter(c => c.type === 'dropped' || c.type === 'disappeared').length;
+        
+        if (improvements > 0 && drops === 0) {
+          notificationBannerMessage = `🎉 ${accountName}: ${improvements} keyword${improvements > 1 ? 's' : ''} improved!`;
+          notificationBannerType = 'success';
+        } else if (drops > 0 && improvements === 0) {
+          notificationBannerMessage = `⚠️ ${accountName}: ${drops} keyword${drops > 1 ? 's' : ''} dropped in rankings`;
+          notificationBannerType = 'warning';
+        } else {
+          notificationBannerMessage = `📊 ${accountName}: ${changes.length} ranking changes detected (${improvements} improved, ${drops} dropped)`;
+          notificationBannerType = 'info';
+        }
+      }
+      
+      // Auto-hide banner after 10 seconds
+      setTimeout(() => {
+        showNotificationBanner = false;
+      }, 10000);
+      
+      // Optional: Show browser notification
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(`🔔 ${changes.length} SEO ranking changes detected!`, {
+          body: changes[0].message,
+          icon: '/favicon.ico'
+        });
+      }
+    }
+  }
+
+  function analyzeRankingChange(keyword: string, oldRank: any, newRank: any, type: 'organic' | 'local') {
+    const typeLabel = type === 'organic' ? 'Organic' : 'Local';
+    
+    // Convert ranks to numbers for comparison
+    const oldNum = oldRank === 'Not found' ? null : parseInt(oldRank);
+    const newNum = newRank === 'Not found' ? null : parseInt(newRank);
+    
+    if (oldNum === null && newNum !== null) {
+      // Appeared in rankings
+      return {
+        keyword,
+        type: 'appeared',
+        message: `${typeLabel}: Now ranking #${newNum}`,
+        icon: '🎉',
+        change: `+${newNum}`,
+        timestamp: new Date().toISOString()
+      };
+    } else if (oldNum !== null && newNum === null) {
+      // Disappeared from rankings
+      return {
+        keyword,
+        type: 'disappeared', 
+        message: `${typeLabel}: No longer ranking (was #${oldNum})`,
+        icon: '⚠️',
+        change: `-${oldNum}`,
+        timestamp: new Date().toISOString()
+      };
+    } else if (oldNum !== null && newNum !== null) {
+      const difference = oldNum - newNum; // Positive = improvement, negative = drop
+      
+      if (difference > 0) {
+        // Improved ranking (lower number = better)
+        return {
+          keyword,
+          type: 'improved',
+          message: `${typeLabel}: #${oldNum} → #${newNum} (↑${difference})`,
+          icon: '📈',
+          change: `+${difference}`,
+          timestamp: new Date().toISOString()
+        };
+      } else if (difference < 0) {
+        // Dropped ranking
+        return {
+          keyword,
+          type: 'dropped',
+          message: `${typeLabel}: #${oldNum} → #${newNum} (↓${Math.abs(difference)})`,
+          icon: '📉', 
+          change: `${difference}`,
+          timestamp: new Date().toISOString()
+        };
+      }
+    }
+    
+    return null;
+  }
+
+  function clearNotifications() {
+    rankingChanges = [];
+  }
+
+  // Update the onMount function
+  onMount(async () => {
+    // Load initial data
+    keywords = await fetchKeywords();
+    await fetchClients();
+    
+    // Auto-load data based on current view
+    if (currentView === 'purplefish' && keywords.length > 0) {
+      await autoLoadPurplefishData();
+    } else if (currentView === 'analytics') {
+      await loadAnalyticsData();
+    }
+    
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+  });
+
+  // Update loadAnalyticsData to be safer
+  async function loadAnalyticsData() {
+    // Don't run on server side
+    if (typeof window === 'undefined') return;
+    
+    if (analyticsAccount === 'purplefish') {
+      // Load Purplefish keywords
+      await loadHistoricalData('purplefish');
+      // Filter keywords that have at least one ranking position
+      availableKeywords = keywords
+        .map(k => k.keyword)
+        .filter(keyword => {
+          return historicalData.some(d => {
+            const keywordName = d.keywords?.keyword;
+            const rank = d.result_JSON?.organicRank;
+            return keywordName === keyword && rank !== 'Not found' && rank !== null && rank !== undefined;
+          });
+        });
+    } else {
+      // Load client keywords
+      const clientId = parseInt(analyticsAccount);
+      analyticsClient = clients.find(c => c.id === clientId);
+      
+      if (analyticsClient) {
+        // Fetch client keywords
+        const resp = await fetch(`/api/client-keywords?client_id=${clientId}`);
+        const data = await resp.json();
+        if (!data.error) {
+          await loadHistoricalData('client', clientId);
+          // Filter keywords that have at least one ranking position
+          availableKeywords = data
+            .map((k: any) => k.keyword)
+            .filter(keyword => {
+              return historicalData.some(d => {
+                const keywordName = d.client_keywords?.keyword;
+                const rank = d.result_JSON?.organicRank;
+                return keywordName === keyword && rank !== 'Not found' && rank !== null && rank !== undefined;
+              });
+            });
+        }
+      }
+    }
+    selectedKeywords.clear();
+    updateChart();
+  }
+
+  // Update loadHistoricalData to be safer
+  async function loadHistoricalData(type: string, clientId?: number) {
+    // Don't run on server side
+    if (typeof window === 'undefined') return;
+    
+    console.log('🔄 Loading historical data:', { type, clientId, timeframe: selectedTimeframe });
+    
+    const params = new URLSearchParams({
+      type,
+      days: selectedTimeframe
+    });
+    
+    // Add custom date range if specified
+    if (selectedTimeframe === 'custom' && customDateFrom && customDateTo) {
+      params.set('date_from', customDateFrom);
+      params.set('date_to', customDateTo);
+      params.delete('days'); // Don't use days for custom range
+    }
+    
+    if (type === 'client' && clientId) {
+      params.append('client_id', clientId.toString());
+    }
+
+    try {
+      const resp = await fetch(`/api/historical?${params}`);
+      const data = await resp.json();
+      
+      console.log('📥 Historical data response:', data);
+      
+      if (!data.error) {
+        historicalData = data;
+        console.log('✅ Historical data loaded:', historicalData.length, 'records');
+        
+        // Update chart if keywords are selected
+        if (selectedKeywords.size > 0) {
+          updateChart();
+        }
+      } else {
+        console.error('❌ API error:', data.error);
+        historicalData = [];
+      }
+    } catch (e) {
+      console.error('❌ Error loading historical data:', e);
+      historicalData = [];
+    }
+  }
+
+  // Update the analytics account selection to call loadAnalyticsData manually
+  async function onAnalyticsAccountChange() {
+    if (typeof window !== 'undefined' && currentView === 'analytics') {
+      await loadAnalyticsData();
+    }
+  }
+
+  // Update switchView function
+  function switchView(view: string) {
+    currentView = view;
+    error = '';
+    
+    // Auto-load data when switching views (only on client side)
+    if (typeof window !== 'undefined') {
+      if (view === 'purplefish' && keywords.length > 0) {
+        autoLoadPurplefishData();
+      } else if (view === 'clients' && selectedClient && clientKeywords.length > 0) {
+        autoLoadClientData();
+      } else if (view === 'analytics') {
+        loadAnalyticsData();
+      } else {
+        results = [];
+        clientResults = [];
+      }
+    }
+  }
+
+  // Update the timeframe change handlers
+  function onTimeframeChange() {
+    if (typeof window === 'undefined') return;
+    
+    if (selectedTimeframe !== 'custom') {
+      // Don't auto-clear dates - let user keep them for future use
+    }
+    
+    // Reload data with new timeframe
+    if (analyticsAccount === 'purplefish') {
+      loadHistoricalData('purplefish');
+    } else {
+      const clientId = parseInt(analyticsAccount);
+      loadHistoricalData('client', clientId);
+    }
+  }
+
+  function onCustomDateChange() {
+    if (typeof window === 'undefined') return;
+    
+    // If both dates are filled and valid, automatically switch to custom
+    if (customDateFrom && customDateTo && customDateFrom <= customDateTo) {
+      selectedTimeframe = 'custom';  // Auto-switch to custom
+      
+      // Reload data with custom range
+      if (analyticsAccount === 'purplefish') {
+        loadHistoricalData('purplefish');
+      } else {
+        const clientId = parseInt(analyticsAccount);
+        loadHistoricalData('client', clientId);
+      }
+    }
+  }
+
+  // ... rest of your existing functions remain the same ...
 </script>
 
 <div class="app-container">
+  <!-- Notification Banner -->
+  {#if showNotificationBanner}
+    <div class="notification-banner {notificationBannerType}">
+      <div class="notification-content">
+        <span class="notification-message">{notificationBannerMessage}</span>
+        <button class="notification-close" on:click={() => showNotificationBanner = false}>×</button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Sidebar -->
   <nav class="sidebar">
     <h2>SEO Tracker</h2>
@@ -1256,7 +1557,7 @@ function exportCurrentResults() {
       <div class="form-row">
         <label>
           Select Account:
-          <select bind:value={analyticsAccount}>
+          <select bind:value={analyticsAccount} on:change={onAnalyticsAccountChange}>
             <option value="purplefish">Purplefish</option>
             {#each clients as client}
               <option value={client.id.toString()}>{client.name}</option>
@@ -1362,6 +1663,28 @@ function exportCurrentResults() {
     {/if}
   </main>
 </div>
+
+{#if rankingChanges.length > 0}
+  <div class="notification-banner">
+    <div class="notification-header">
+      <span class="bell-icon">🔔</span>
+      <span class="notification-title">Ranking Changes Detected!</span>
+      <button class="dismiss-btn" on:click={clearNotifications}>✕</button>
+    </div>
+    <div class="changes-list">
+      {#each rankingChanges.slice(0, 5) as change}
+        <div class="change-item" class:positive={change.type === 'improved'} class:negative={change.type === 'dropped'} class:new={change.type === 'appeared'} class:lost={change.type === 'disappeared'}>
+          <span class="keyword">{change.keyword}</span>
+          <span class="change-text">{change.message}</span>
+          <span class="change-indicator">{change.icon}</span>
+        </div>
+      {/each}
+      {#if rankingChanges.length > 5}
+        <div class="more-changes">+{rankingChanges.length - 5} more changes</div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Raleway:wght@400;700;800&display=swap');
@@ -1777,6 +2100,96 @@ select:focus {
   transform: translateY(-2px) scale(1.04);
 }
 
+.notification-banner {
+  background: #fff3cd;
+  color: #856404;
+  padding: 1em;
+  border-radius: var(--radius);
+  margin-bottom: 2em;
+  border: 1px solid #ffeeba;
+  position: relative;
+}
+
+.notification-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5em;
+}
+
+.bell-icon {
+  font-size: 1.2em;
+  margin-right: 0.5em;
+}
+
+.notification-title {
+  font-weight: 700;
+  font-family: 'Raleway', 'Segoe UI', Arial, sans-serif;
+}
+
+.dismiss-btn {
+  background: transparent;
+  border: none;
+  color: #856404;
+  cursor: pointer;
+  font-size: 1.2em;
+  position: absolute;
+  top: 0.5em;
+  right: 0.5em;
+}
+
+.changes-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.change-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5em 0;
+  border-bottom: 1px solid #e1e5e9;
+}
+
+.change-item:last-child {
+  border-bottom: none;
+}
+
+.keyword {
+  font-weight: 600;
+}
+
+.change-text {
+  flex: 1;
+  margin: 0 0.5em;
+}
+
+.change-indicator {
+  font-size: 1.2em;
+}
+
+.positive {
+  color: #155724;
+}
+
+.negative {
+  color: #721c24;
+}
+
+.new {
+  color: #0c5460;
+}
+
+.lost {
+  color: #721c24;
+}
+
+.more-changes {
+  text-align: center;
+  padding: 0.5em 0;
+  color: #856404;
+  font-weight: 500;
+}
 @media (max-width: 800px) {
   .main-container {
     max-width: 98vw;
@@ -1799,5 +2212,235 @@ select:focus {
     padding: 1em;
     height: 400px;
   }
+}
+.notification-banner {
+  background: linear-gradient(135deg, #fff8e1, #f3e5f5);
+  border: 2px solid var(--primary1);
+  border-radius: var(--radius);
+  margin-bottom: 2em;
+  box-shadow: 0 4px 20px rgba(85, 195, 159, 0.2);
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.notification-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1em 1.5em;
+  background: rgba(85, 195, 159, 0.1);
+  border-bottom: 1px solid rgba(85, 195, 159, 0.2);
+}
+
+.bell-icon {
+  font-size: 1.2em;
+  margin-right: 0.5em;
+  animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-10deg); }
+  75% { transform: rotate(10deg); }
+}
+
+.notification-title {
+  font-weight: 700;
+  color: var(--primary2);
+  font-family: 'Raleway', sans-serif;
+}
+
+.dismiss-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.2em;
+  color: #666;
+  cursor: pointer;
+  padding: 0.2em 0.5em;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.dismiss-btn:hover {
+  background: rgba(0,0,0,0.1);
+  transform: none;
+}
+
+.changes-list {
+  padding: 1em 1.5em;
+}
+
+.change-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.keyword-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.5em;
+  background: white;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.2s;
+  font-family: 'Raleway', sans-serif;
+}
+
+.keyword-checkbox:hover {
+  background: #f0f8ff;
+}
+
+.keyword-checkbox input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.needs-refresh {
+  background: #fff3cd !important;
+}
+
+.placeholder {
+  color: #856404;
+  font-style: italic;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  margin-right: 1em;
+}
+
+.form-group label {
+  font-weight: 600;
+  color: var(--primary2);
+  font-size: 0.9em;
+}
+
+/* Fix notification styles */
+.change-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8em 1em;
+  margin-bottom: 0.5em;
+  border-radius: var(--radius);
+  background: white;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transition: transform 0.2s;
+}
+
+.change-item:hover {
+  transform: translateX(5px);
+}
+
+.change-item.positive {
+  border-left: 4px solid #4caf50;
+  background: linear-gradient(90deg, #e8f5e8, white);
+}
+
+.change-item.negative {
+  border-left: 4px solid #f44336;
+  background: linear-gradient(90deg, #ffebee, white);
+}
+
+.keyword {
+  font-weight: 600;
+  color: var(--primary2);
+  min-width: 120px;
+}
+
+.change-text {
+  flex: 1;
+  margin: 0 1em;
+  font-size: 0.9em;
+}
+
+.change-indicator {
+  font-size: 1.2em;
+}
+
+/* Notification Banner Styles */
+.notification-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  padding: 1em 1.5em;
+  color: white;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  transform: translateY(-100%);
+  animation: slideDown 0.3s ease-out forwards;
+}
+
+.notification-banner.success {
+  background: linear-gradient(90deg, #4caf50, #45a049);
+}
+
+.notification-banner.warning {
+  background: linear-gradient(90deg, #ff9800, #f57c00);
+}
+
+.notification-banner.info {
+  background: linear-gradient(90deg, #2196f3, #1976d2);
+}
+
+.notification-banner.error {
+  background: linear-gradient(90deg, #f44336, #d32f2f);
+}
+
+.notification-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.notification-message {
+  font-weight: 500;
+  font-size: 0.95em;
+}
+
+.notification-close {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1.5em;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 1em;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+.notification-close:hover {
+  opacity: 1;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* Adjust app container to accommodate notification banner */
+.app-container {
+  padding-top: 0;
+  transition: padding-top 0.3s ease;
+}
+
+.notification-banner ~ .sidebar,
+.notification-banner ~ .main-content {
+  margin-top: 4em;
 }
 </style>
